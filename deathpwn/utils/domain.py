@@ -1,7 +1,7 @@
 """Domain normalization and validation utilities.
 
 Handles quirks from LLM-extracted domains (leading whitespace from
-FunctionGemma, mixed case, scheme/path/port/query/fragment) and
+MiniCPM5/FunctionGemma, mixed case, scheme/path/port/query/fragment) and
 provides strict validation before passing to subfinder.
 """
 
@@ -27,7 +27,7 @@ def normalize_domain(raw: str) -> str:
         raw: Raw domain string, possibly containing scheme, path,
             port, query, fragment, mixed case, or surrounding
             whitespace. e.g. ``" https://Example.COM/path "`` or
-            ``" example.com "`` (leading-space bug from FunctionGemma)
+            ``" example.com "`` (leading-space quirk from MiniCPM5/FunctionGemma)
             or ``"example.com:8080"``.
 
     Returns:
@@ -66,6 +66,27 @@ _DOMAIN_TOKEN_RE = re.compile(r"\b([a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,})\b"
 _SUBDOMAIN_HINT_RE = re.compile(r"sub\s*domains?|\bsubs\b|subfinder", re.I)
 
 
+def _lev(a: str, b: str) -> int:
+    """Levenshtein distance (iterative, no deps) — for fuzzy hint matching."""
+    if a == b:
+        return 0
+    n, m = len(a), len(b)
+    if n == 0:
+        return m
+    if m == 0:
+        return n
+    prev = list(range(m + 1))
+    cur = [0] * (m + 1)
+    for i in range(1, n + 1):
+        cur[0] = i
+        ca = a[i - 1]
+        for j in range(1, m + 1):
+            cost = 0 if ca == b[j - 1] else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+        prev, cur = cur, prev
+    return prev[m]
+
+
 def extract_domain_from_text(text: str) -> str | None:
     """Fallback: extract a domain from raw text without hitting the LLM.
 
@@ -82,8 +103,34 @@ def extract_domain_from_text(text: str) -> str | None:
 
 
 def _looks_like_subdomain_request(text: str) -> bool:
-    """Return True if text mentions subdomains/subs."""
-    return bool(_SUBDOMAIN_HINT_RE.search(text))
+    """Return True if text mentions subdomains/subs (fuzzy, typo-tolerant).
+
+    Fast path: exact regex (covers ``sub domains``, ``subs``, ``subfinder``).
+    Slow path: fuzzy word-level Levenshtein against ``subdomain``/``subdomains``/
+    ``subfinder``/``subs`` so typos like ``subomains`` or ``subdoamins`` still
+    route to subfinder instead of the misleading ``No matching tool`` hint.
+
+    Negatives like ``scan ports`` or ``hello`` stay False — distance to any
+    target word is > threshold (ports↔subs = 4, hello↔subdomain = 7+).
+    """
+    if _SUBDOMAIN_HINT_RE.search(text):
+        return True
+    # Fuzzy fallback — tolerates 1-2 char typos that MiniCPM5 already handles
+    # at the LLM level but the exact regex would block at the hallucination guard.
+    words = re.findall(r"[a-z]+", text.lower())
+    for w in words:
+        # Skip tiny noise words — avoids false positives on "is"/"in"/"a"
+        if len(w) < 3:
+            continue
+        if _lev(w, "subdomain") <= 2:
+            return True
+        if _lev(w, "subdomains") <= 2:
+            return True
+        if _lev(w, "subfinder") <= 2:
+            return True
+        if _lev(w, "subs") <= 1:
+            return True
+    return False
 
 
 def validate_domain(domain: str) -> bool:

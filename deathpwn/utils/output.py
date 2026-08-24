@@ -1,16 +1,27 @@
 """Output path resolution for DeathPWN results.
 
-Resolves where subfinder results are saved. Supports an explicit
-file/directory path, an output directory, or the default cwd location.
-All returned paths are expanded (``~``) and normalized to absolute
-form. Directory creation is deferred to :func:`ensure_parent_exists`.
+Resolves where subfinder results are saved. Linked to the ``ctf-flagboard``
+project folder — by default all scans land in ``ctf-flagboard/output/``
+so both repos share one resource root (``DEATHPWN_FLAGBOARD_ROOT`` /
+``FLAGBOARD_ROOT`` env, else sibling ``../ctf-flagboard``).
 
-Streaming tee integration (see plan § Subfinder execution — streaming tee):
-    subfinder is run via ``Popen(..., stdout=PIPE, text=True, bufsize=1)``
-    and each line is teed to stdout + file. The file path comes from
-    :func:`resolve_output_path`; the caller creates parent dirs via
-    :func:`ensure_parent_exists` before opening the file. ``-o`` in
-    subfinder itself is not used so output streams live.
+Hierarchy:
+    1. ``output`` — explicit file path or directory (``-o``).
+    2. ``output_dir`` — directory flag (``--output-dir``).
+    3. Fallback — ``{FLAGBOARD_ROOT}/output/<domain>-subdomains.txt``
+       (resolved from :mod:`deathpwn.config` so ``deathpwn`` run from
+       anywhere still writes to the flagboard project).
+
+All returned paths are ``~``-expanded and absolute. Filesystem mutation
+is deferred to :func:`ensure_parent_exists`.
+
+The default directory is also kept as a symlink ``DeathPWN/output →
+../ctf-flagboard/output`` so ``ls DeathPWN/output`` reads the same
+physical folder.
+
+Linked source: ``ctf-flagboard/output/`` and
+``ctf-flagboard/lib/functiongemma.js`` (same ``openbmb/minicpm5:latest``
+tuning — ``keep_alive 30m``, ``num_predict 128``, think false, Q4_K_M).
 """
 
 from __future__ import annotations
@@ -28,7 +39,7 @@ def resolve_output_path(
     Priority:
         1. ``output`` — explicit file path or directory.
         2. ``output_dir`` — directory in which to place the default-named file.
-        3. Fallback — current working directory.
+        3. Fallback — ``{FLAGBOARD_ROOT}/output/<domain>-subdomains.txt``.
 
     The default filename is ``f"{domain}-subdomains.txt"``.
 
@@ -71,8 +82,8 @@ def resolve_output_path(
         PosixPath('/tmp/example.com-subdomains.txt')
         >>> resolve_output_path("example.com", output_dir="~/results")
         PosixPath('/home/user/results/example.com-subdomains.txt')
-        >>> resolve_output_path("example.com")
-        PosixPath('/cwd/example.com-subdomains.txt')
+        >>> resolve_output_path("example.com")  # doctest: +SKIP
+        PosixPath('/.../ctf-flagboard/output/example.com-subdomains.txt')
     """
     default_name = f"{domain}-subdomains.txt"
 
@@ -91,7 +102,10 @@ def resolve_output_path(
     if output_dir:
         return _normalize(Path(output_dir)) / default_name
 
-    return Path.cwd() / default_name
+    # Default: shared ctf-flagboard/output — resources taken from this project folder
+    from deathpwn import config
+
+    return config.DEFAULT_OUTPUT_DIR / default_name
 
 
 def ensure_parent_exists(path: Path) -> None:

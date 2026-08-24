@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "DeathPWN" }]
-keywords = ["bug-bounty", "pentest", "subdomain", "subfinder", "ollama", "functiongemma"]
+keywords = ["bug-bounty", "pentest", "subdomain", "subfinder", "ollama", "openbmb/minicpm5"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
@@ -21,6 +21,7 @@ classifiers = [
 ]
 dependencies = [
   "requests>=2.28",
+  "rich>=13",
 ]
 
 [project.optional-dependencies]

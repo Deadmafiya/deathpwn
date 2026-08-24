@@ -1,4 +1,4 @@
-"""DeathPWN CLI — natural-language bug bounty runner."""
+"""DeathPWN CLI — natural-language bug bounty runner (Rich-powered UI)."""
 
 from __future__ import annotations
 
@@ -6,48 +6,41 @@ import argparse
 import sys
 import traceback
 
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+from rich.theme import Theme
+
 from deathpwn import __version__
 
 # ---------------------------------------------------------------------------
-# ANSI helpers
+# Rich consoles — linked with: ctf-flagboard/lib/functiongemma.js (now MiniCPM5) output
 # ---------------------------------------------------------------------------
 
-RED = "31"
-GREEN = "32"
-CYAN = "36"
-YELLOW = "33"
-DIM = "90"
-RESET = "0"
+_THEME = Theme({
+    "info": "cyan",
+    "success": "bold green",
+    "warning": "yellow",
+    "error": "bold red",
+    "dim": "dim",
+    "hint": "dim",
+    "accent": "bold magenta",
+})
 
+console = Console(theme=_THEME, highlight=False)
+err_console = Console(stderr=True, theme=_THEME, highlight=False)
 
+# Legacy helpers — now thin wrappers over Rich (kept for compat)
 def _color(text: str, code: str) -> str:
-    if sys.stdout.isatty():
-        return f"\033[{code}m{text}\033[0m"
-    return text
+    return text  # Rich handles color
 
-
-def _red(s: str) -> str:
-    return _color(s, RED)
-
-
-def _green(s: str) -> str:
-    return _color(s, GREEN)
-
-
-def _cyan(s: str) -> str:
-    return _color(s, CYAN)
-
-
-def _yellow(s: str) -> str:
-    return _color(s, YELLOW)
-
-
-def _dim(s: str) -> str:
-    return _color(s, DIM)
-
-
-def _bold(s: str) -> str:
-    return _color(s, "1")
+def _red(s: str) -> str: return s
+def _green(s: str) -> str: return s
+def _cyan(s: str) -> str: return s
+def _yellow(s: str) -> str: return s
+def _dim(s: str) -> str: return s
+def _bold(s: str) -> str: return s
 
 
 # ---------------------------------------------------------------------------
@@ -79,13 +72,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         dest="output",
         default=None,
-        help="Output file path (default: ./<domain>-subdomains.txt)",
+        help="Output file path (default: ctf-flagboard/output/<domain>-subdomains.txt — linked resource)",
     )
     p.add_argument(
         "--output-dir",
         dest="output_dir",
         default=None,
-        help="Output directory (default: current directory)",
+        help="Output directory (default: ctf-flagboard/output/ — linked from this project; override with --output-dir)",
     )
     p.add_argument(
         "--all",
@@ -113,7 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--model",
         default=None,
-        help="Ollama model (default: functiongemma:latest)",
+        help="Ollama model (default: openbmb/minicpm5:latest)",
     )
     p.add_argument(
         "--version",
@@ -131,21 +124,28 @@ def main(argv: list[str] | None = None) -> int:
         # 1. No query — parser.error style
         if not args.query:
             parser.print_usage(sys.stderr)
-            print(f"{parser.prog}: error: the following arguments are required: query", file=sys.stderr)
-            print(file=sys.stderr)
-            print(_EXAMPLES, file=sys.stderr)
-            print(_yellow('  hint: try  deathpwn "find subdomains for example.com"'), file=sys.stderr)
+            err_console.print(f"{parser.prog}: error: the following arguments are required: query", style="error")
+            err_console.print()
+            err_console.print(Panel(_EXAMPLES, title="usage", border_style="dim", padding=(0, 1)))
+            err_console.print('[hint]  try  deathpwn "find subdomains for example.com"', style="hint")
             return 2
 
         query_text = " ".join(args.query)
 
-        # 3. Understanding line
+        # 3. Understanding — Rich status spinner ( linked with minicpm5 hot: keep_alive 30m )
+        status = None
         if args.verbose:
-            print(_dim(f'[*] Understanding: "{query_text}"...'), flush=True)
+            console.print(f'[dim]● Understanding: "{query_text}"...[/dim]')
         else:
-            print(_dim("→ Interpreting request..."), flush=True)
+            status = console.status("[dim]→ Interpreting request...[/dim]", spinner="dots")
+            status.start()
 
-        # 4. Call LLM
+        def _stop_status() -> None:
+            if status is not None:
+                try: status.stop()
+                except Exception: pass
+
+        # 4. Call LLM (openbmb/minicpm5:latest via Ollama — same source as ctf-flagboard/lib/functiongemma.js)
         from deathpwn.llm.client import (
             LLMParseError,
             ModelNotFound,
@@ -157,43 +157,47 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             tool_call = call_llm(query_text, model=args.model)
+            _stop_status()
         except OllamaUnavailable as exc:
+            _stop_status()
             fb = fallback_tool_call(query_text)
             if fb is not None:
-                print(_dim(f"  [*] Ollama unreachable — using local parser: {fb}"), flush=True)
+                console.print(f"  [dim]● Ollama unreachable — using local parser: {fb}[/dim]")
                 tool_call = fb
             else:
                 msg = str(exc) or f"Ollama not reachable. Is it running? Try: ollama serve"
                 if "ollama serve" not in msg.lower():
                     msg = f"{msg} Is it running? Try: ollama serve"
-                print(_red(msg), file=sys.stderr)
+                err_console.print(Panel(msg, title="[error]Ollama unavailable[/]", border_style="red"))
                 return 4
         except ModelNotFound as exc:
+            _stop_status()
             msg = str(exc)
-            model_name = args.model or "functiongemma:latest"
+            model_name = args.model or "openbmb/minicpm5:latest"
             if "ollama pull" not in msg.lower():
                 msg = f"Model {model_name} not found. Try: ollama pull {model_name}"
-            print(_red(msg), file=sys.stderr)
+            err_console.print(Panel(msg, title="[error]Model not found[/]", border_style="red"))
             return 4
         except OllamaTimeout as exc:
-            # Retry via fast regex fallback before failing
+            _stop_status()
             fb = fallback_tool_call(query_text)
             if fb is not None:
-                print(_dim(f"  [*] FunctionGemma slow — using local parser: {fb}"), flush=True)
+                console.print(f"  [dim]● MiniCPM5 slow — using local parser: {fb}[/dim]")
                 tool_call = fb
             else:
                 msg = str(exc) or "Ollama timed out. Try again or check Ollama status."
                 if "timed out" not in msg.lower():
                     msg = f"Ollama timed out: {msg}"
-                print(_red(msg), file=sys.stderr)
+                err_console.print(Panel(msg, title="[error]Timeout[/]", border_style="red"))
                 return 4
         except LLMParseError as exc:
+            _stop_status()
             fb = fallback_tool_call(query_text)
             if fb is not None:
-                print(_dim(f"  [*] LLM parse error — using local parser: {fb}"), flush=True)
+                console.print(f"  [dim]● LLM parse error — using local parser: {fb}[/dim]")
                 tool_call = fb
             else:
-                print(_red(f"LLM error: {exc}"), file=sys.stderr)
+                err_console.print(Panel(str(exc), title="[error]LLM error[/]", border_style="red"))
                 return 4
 
         # 5. Hallucination guard — drop subfinder call when English has no subdomain intent
@@ -202,25 +206,31 @@ def main(argv: list[str] | None = None) -> int:
 
             if not _looks_like_subdomain_request(query_text):
                 if args.verbose:
-                    print(_dim("  [*] Discarding hallucinated tool_call — query has no subdomain intent"), flush=True)
-                print("No matching tool for that request.", file=sys.stderr)
-                print("I currently support:", file=sys.stderr)
-                print('  • find subdomains — e.g. deathpwn "find subdomains for example.com"', file=sys.stderr)
+                    console.print("  [dim]● Discarding hallucinated tool_call — query has no subdomain intent[/dim]")
+                err_console.print(Panel(
+                    "[error]No matching tool for that request.[/]\n\n"
+                    "I currently support:\n"
+                    '  • [info]find subdomains[/] — e.g. deathpwn "find subdomains for example.com"',
+                    title="hint", border_style="yellow", padding=(0, 1)
+                ))
                 return 1
 
         # 5b. No tool matched
         if tool_call is None:
-            print("No matching tool for that request.", file=sys.stderr)
-            print("I currently support:", file=sys.stderr)
-            print('  • find subdomains — e.g. deathpwn "find subdomains for example.com"', file=sys.stderr)
+            err_console.print(Panel(
+                "[error]No matching tool for that request.[/]\n\n"
+                "I currently support:\n"
+                '  • [info]find subdomains[/] — e.g. deathpwn "find subdomains for example.com"',
+                title="hint", border_style="yellow", padding=(0, 1)
+            ))
             if args.verbose:
-                print(_dim("  (model returned no tool_call — try rephrasing)"), file=sys.stderr)
+                err_console.print("  [dim](model returned no tool_call — try rephrasing)[/dim]")
             return 1
 
         if args.verbose:
-            print(_dim(f"[*] Tool call: {tool_call}"), flush=True)
+            console.print(f"[dim]● Tool call: {tool_call}[/dim]")
             if isinstance(tool_call, dict) and tool_call.get("content"):
-                print(_dim(f"  model content: {tool_call['content']}"), file=sys.stderr)
+                err_console.print(f"  [dim]model content: {tool_call['content']}[/dim]")
 
         # 6. Extract domain
         arguments = tool_call.get("arguments", {}) if isinstance(tool_call, dict) else {}
@@ -229,9 +239,12 @@ def main(argv: list[str] | None = None) -> int:
         domain_raw = arguments.get("domain", "")
         if not isinstance(domain_raw, str):
             domain_raw = str(domain_raw) if domain_raw is not None else ""
-        # handle missing domain
         if not domain_raw or not domain_raw.strip():
-            print(_red(f'Could not extract valid domain from \'{domain_raw}\'. Try: deathpwn "find subdomains for example.com"'), file=sys.stderr)
+            err_console.print(Panel(
+                f"[error]Could not extract valid domain from '{domain_raw}'.[/]\n"
+                'Try: deathpwn "find subdomains for example.com"',
+                border_style="red"
+            ))
             return 2
 
         # 7. Normalize + validate
@@ -240,13 +253,17 @@ def main(argv: list[str] | None = None) -> int:
         domain = normalize_domain(domain_raw)
 
         if args.verbose:
-            print(_dim(f'[*] Raw domain: "{domain_raw}" -> normalized: "{domain}"'), flush=True)
+            console.print(f'[dim]● Raw domain: "{domain_raw}" -> normalized: "{domain}"[/dim]')
 
         if not validate_domain(domain):
-            print(_red(f'Could not extract valid domain from \'{domain_raw}\'. Try: deathpwn "find subdomains for example.com"'), file=sys.stderr)
+            err_console.print(Panel(
+                f"[error]Could not extract valid domain from '{domain_raw}'.[/]\n"
+                'Try: deathpwn "find subdomains for example.com"',
+                border_style="red"
+            ))
             return 2
 
-        # 8. Resolve output
+        # 8. Resolve output (linked: ctf-flagboard/output by default)
         from deathpwn.utils.output import resolve_output_path
 
         output_path = resolve_output_path(domain, args.output, args.output_dir)
@@ -254,14 +271,19 @@ def main(argv: list[str] | None = None) -> int:
         # 9. all_sources
         all_sources = bool(arguments.get("all_sources", False)) or bool(args.all)
 
-        # handle --json flag (warn but continue)
         if args.json_output:
-            print(_dim("[*] Note: --json flag is accepted but JSON output is not yet implemented in v0.1 (txt only)."), flush=True)
+            console.print("[dim]● Note: --json flag is accepted but JSON output is not yet implemented in v0.1 (txt only).[/dim]")
 
-        # 10. Dry-run
+        # 10. Dry-run — Rich panel
         if args.dry_run:
             cmd_preview = f"subfinder -d {domain} -silent" + (" -all" if all_sources else "")
-            print(f"[DRY-RUN] Would run: {cmd_preview}\nOutput: {output_path}")
+            grid = Table.grid(padding=(0, 1))
+            grid.add_column(style="dim", justify="right")
+            grid.add_column(style="info")
+            grid.add_row("Would run:", f"[bold]{cmd_preview}[/]")
+            grid.add_row("Output:", str(output_path))
+            grid.add_row("Resources:", "ctf-flagboard/output/ [dim](linked)[/dim]")
+            console.print(Panel(grid, title="[info]DRY-RUN[/]", border_style="cyan", padding=(1, 2)))
             return 0
 
         # 11. Registry dispatch
@@ -271,48 +293,59 @@ def main(argv: list[str] | None = None) -> int:
         tool_name = tool_call.get("name", "") if isinstance(tool_call, dict) else ""
         fn = registry.TOOL_REGISTRY.get(tool_name)
         if fn is None:
-            print(_red(f'Unknown tool "{tool_name}".'), file=sys.stderr)
+            err_console.print(Panel(f'[error]Unknown tool "{tool_name}".[/]', border_style="red"))
             known = ", ".join(sorted(registry.TOOL_REGISTRY)) or "(none)"
-            print(_dim(f"  Known tools: {known}"), file=sys.stderr)
+            err_console.print(f"  [dim]Known tools: {known}[/dim]")
             return 3
 
-        # 12. Header
-        print(f"[*] Finding subdomains for {domain}...", flush=True)
+        # 12. Header — Rich
+        console.print(Panel(
+            f"[info]Finding subdomains for[/] [bold]{domain}[/]  [dim]via subfinder → {output_path}[/dim]",
+            border_style="cyan", padding=(0, 1)
+        ))
 
-        # 13. Call tool
+        # 13. Call tool (Rich streaming — Live table inside subfinder.py)
         from deathpwn.tools.subfinder import ToolExecutionError, ToolNotFound
 
         try:
             count = fn(domain, output=output_path, all_sources=all_sources, verbose=args.verbose)
         except ToolNotFound as exc:
-            print(_red(str(exc)), file=sys.stderr)
+            err_console.print(Panel(str(exc), title="[error]Tool not found[/]", border_style="red"))
             return 3
         except ToolExecutionError as exc:
-            print(_red(f"Subfinder failed: {exc}"), file=sys.stderr)
+            err_console.print(Panel(f"Subfinder failed: {exc}", title="[error]Execution failed[/]", border_style="red"))
             return 3
         except KeyboardInterrupt:
             return 130
 
-        # 14. Summary
+        # 14. Summary — Rich panels
         if count > 0:
-            print(_green(f"[+] Found {count} subdomains → {output_path}"), flush=True)
+            summary = Table.grid(padding=(0, 1))
+            summary.add_column(style="success", justify="right")
+            summary.add_column()
+            summary.add_row("Found", f"[bold]{count}[/] subdomains")
+            summary.add_row("Saved", str(output_path))
+            summary.add_row("Source", "ctf-flagboard/output/ [dim](linked)[/dim]")
+            console.print(Panel(summary, title="[success]Done[/]", border_style="green", padding=(0, 1)))
             return 0
         else:
-            print(f"[*] No subdomains found (saved empty file at {output_path})", flush=True)
+            console.print(Panel(
+                f"[warning]No subdomains found[/] [dim](saved empty file at {output_path})[/dim]",
+                border_style="yellow"
+            ))
             return 1
 
     except SystemExit:
         raise
     except Exception as exc:
-        # top-level unexpected
         verbose = False
         try:
             verbose = bool(args.verbose)  # type: ignore[possibly-undefined]
         except Exception:
             pass
-        print(_red(f"Unexpected error: {exc}"), file=sys.stderr)
+        err_console.print(Panel(f"[error]Unexpected error: {exc}[/]", title="error", border_style="red"))
         if verbose:
             traceback.print_exc()
         else:
-            print(_dim("  (run with --verbose for traceback)"), file=sys.stderr)
+            err_console.print("  [dim](run with --verbose for traceback)[/dim]")
         return 3

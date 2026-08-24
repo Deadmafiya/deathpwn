@@ -8,7 +8,7 @@ class TestNormalizeDomain:
     @pytest.mark.parametrize(
         "raw, expected",
         [
-            (" example.com ", "example.com"),  # FunctionGemma leading-space quirk
+            (" example.com ", "example.com"),  # MiniCPM5 leading-space quirk
             ("https://example.com", "example.com"),
             ("https://example.com/path", "example.com"),
             ("https://example.com:8080", "example.com"),

@@ -4,7 +4,10 @@ from deathpwn.utils.output import resolve_output_path, ensure_parent_exists
 
 def test_default_is_cwd():
     p = resolve_output_path("example.com")
-    assert p == Path.cwd() / "example.com-subdomains.txt"
+    # Default is the linked ctf-flagboard/output resource folder, not CWD.
+    from deathpwn.config import DEFAULT_OUTPUT_DIR
+    assert p == DEFAULT_OUTPUT_DIR / "example.com-subdomains.txt"
+    assert "ctf-flagboard" in str(p) or "output" in str(p)
 
 def test_output_file():
     p = resolve_output_path("example.com", output="/tmp/out.txt")

@@ -1,4 +1,4 @@
-"""Tests for Ollama / FunctionGemma client."""
+"""Tests for Ollama / MiniCPM5 client."""
 import json
 import pytest
 from unittest.mock import MagicMock, patch
