@@ -256,8 +256,8 @@ ensure_model() {
 }
 ensure_model || true
 
-# ── 3) subfinder ─────────────────────────────────────────────────────────────
-step "3/5  subfinder"
+# ── 3) tools: subfinder + dirb ───────────────────────────────────────────────
+step "3/5  tools (subfinder + dirb)"
 
 ensure_subfinder() {
   if command -v subfinder >/dev/null 2>&1; then
@@ -290,7 +290,20 @@ ensure_subfinder() {
   fi
   return 0
 }
+
+ensure_dirb() {
+  if command -v dirb >/dev/null 2>&1; then
+    ok "dirb at $(command -v dirb)"
+    return 0
+  fi
+  warn "dirb not found (needed for: deathpwn \"start directory bruteforce on example.com\" -> dirb https://example.com)"
+  info "Install:"
+  echo "  ${DIM}sudo pacman -S dirb${RST}  (Arch)"
+  echo "  ${DIM}sudo apt update && sudo apt install -y dirb${RST}  (Debian/Ubuntu)"
+  return 0
+}
 ensure_subfinder || true
+ensure_dirb || true
 
 # ── 4) venv + install ────────────────────────────────────────────────────────
 step "4/5  Python package"
@@ -421,11 +434,18 @@ if command -v subfinder >/dev/null 2>&1; then
 else
   warn "subfinder still missing — install per step 3/5 hint above"
 fi
+if command -v dirb >/dev/null 2>&1; then
+  ok "dirb ready ($(dirb 2>&1 | head -n1 || echo ok))"
+else
+  warn "dirb still missing — needed for directory bruteforce (install per step 3/5 hint above)"
+  echo "  ${DIM}sudo pacman -S dirb${RST}  or  ${DIM}sudo apt install -y dirb${RST}"
+fi
 
 echo ""
 printf "${GREEN}Done.${RST}  Try:\n"
 echo "  deathpwn --help"
 echo "  deathpwn \"find subdomains for hadiya.in\" --dry-run --verbose"
+echo "  deathpwn \"start directory bruteforce on example.com\" --dry-run  # -> dirb https://example.com"
 echo "  deathpwn \"find subomains in hadiya.in\" --dry-run   # typo-tolerant"
 echo ""
 printf "${DIM}Env overrides: DEATHPWN_MODEL, DEATHPWN_TIMEOUT, DEATHPWN_THINK=1 (re-enable thinking), DEATHPWN_SYSTEM_PROMPT${RST}\n"

@@ -13,9 +13,9 @@ Extensible by design — one file per tool via a registry. v0.1 ships one capabi
 
 ## What it does (v0.1)
 
-One capability: **subdomain discovery via `subfinder`**, fronted by **MiniCPM5 on Ollama**.
+Two capabilities: **subdomain discovery via `subfinder`** + **directory bruteforce via `dirb`**, both fronted by **MiniCPM5 on Ollama**.
 
-You type English. MiniCPM5 emits a `subfinder` tool call. DeathPWN normalizes the domain and runs `subfinder` with a streaming tee — each subdomain prints as it arrives and is flushed to disk.
+You type English. MiniCPM5 emits a `subfinder` or `dirb` tool call. DeathPWN normalizes the target and runs the tool with a streaming tee — results print as they arrive and are flushed to disk. For `dirb`, the CLI adds `https://` (e.g. `example.com → https://example.com`), never the model.
 
 ```
 deathpwn "find subdomains for https://example.com"
@@ -38,6 +38,7 @@ No daemon, no state between runs. One-shot CLI.
 | **Ollama** | https://ollama.com → `ollama serve` (keep running) |
 | **MiniCPM5** | `ollama pull openbmb/minicpm5:latest` (~688 MB) |
 | **subfinder** | `sudo pacman -S subfinder` · or `go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest` |
+| **dirb** | `sudo pacman -S dirb` · or `sudo apt install -y dirb` |
 
 Verify:
 
@@ -80,6 +81,8 @@ deathpwn --help
 ```bash
 deathpwn "find subdomains for https://example.com"
 deathpwn "enumerate subdomains of example.com"
+deathpwn "start directory bruteforce on example.com"        # -> dirb https://example.com
+deathpwn "bruteforce directories on https://example.com"     # https added by CLI, not the model
 ```
 
 ### Without quotes
@@ -142,33 +145,34 @@ Exit codes: `0` success · `1` no results / no matching tool · `2` bad usage / 
 3-step pipeline:
 
 ```
-1. English ──► 2. MiniCPM5 tool call ──► 3. subfinder streaming tee
+1. English ──► 2. MiniCPM5 tool call ──► 3. streaming tee (subfinder or dirb)
                 (Ollama /api/chat)              normalize → run → save
 ```
 
 ```
 "find subdomains         POST {OLLAMA_HOST}/api/chat         normalize_domain()
  for https://             model: openbmb/minicpm5:latest         strip https://, path,
-   example.com"  ─────►   tools: [subfinder]  ─────►  {     port, case, whitespace
-                         returns: {name:               domain: "example.com"}
+   example.com"  ─────►   tools: [subfinder,    ─────►  {     port, case, whitespace
+                         returns: {name:         dirb]   domain: "example.com"}
                                    "subfinder",  ─────►  subfinder -d example.com -silent
-                                   arguments:              │
-                                     {domain:               ├──► stdout (live)
+                                   arguments:              │         or  dirb https://example.com
+                                     {domain:               ├──► stdout (live)  (https added by CLI)
                                       "example.com"}}        └──► ./example.com-subdomains.txt
+                                                             └──► ./example.com-dirb.txt
 ```
 
-- **LLM layer** — `deathpwn/llm/client.py` POSTs raw English + `TOOL_DEFINITIONS` to Ollama (no prompt engineering, `stream: false`).
-- **Normalize** — `deathpwn/utils/domain.py` handles MiniCPM5 quirks (leading space), strips scheme/path/port, validates against strict regex.
-- **Execute** — `deathpwn/tools/subfinder.py` `Popen`s subfinder, tees each line to stdout + file with `flush()`.
+- **LLM layer** — `deathpwn/llm/client.py` POSTs English + `TOOL_DEFINITIONS` (subfinder+dirb) + system prompt to Ollama (`stream:false`, `think:false`, `num_predict:128`); also does JSON-in-content fallback and URL→bare-host normalization if the model slips.
+- **Normalize** — `deathpwn/utils/domain.py` handles quirks (leading space), strips scheme/path/port, validates against strict regex; hallucination guard (`_looks_like_any_tool_request`) covers subdomains + dirb with typo tolerance.
+- **Execute** — `deathpwn/tools/subfinder.py` / `deathpwn/tools/dirb.py` each `Popen` their binary, tee each line to stdout + file with `flush()`. For dirb, CLI builds `https://` from the bare host — **never the model**.
 
-Adding a tool = one file in `deathpwn/tools/` with `@register("name")` + one schema entry in `deathpwn/llm/tools.py`. No changes to CLI or LLM client.
+Adding a tool = one file in `deathpwn/tools/` with `@register("name")` + one schema entry in `deathpwn/llm/tools.py`. No changes to the LLM client contract (non-thinking, 128).
 
 ---
 
 ## Output
 
-- **Default:** `./<domain>-subdomains.txt` in the current directory.
-- **`-o / --output <path>`** — explicit file path. If `<path>` ends with `/` or is an existing directory, the default filename is appended: `deathpwn "find subs for example.com" -o /tmp/` → `/tmp/example.com-subdomains.txt`.
+- **Default:** `./<domain>-subdomains.txt` for subfinder, `./<domain>-dirb.txt` for dirb (both in `ctf-flagboard/output/` via the `output` symlink).
+- **`-o / --output <path>`** — explicit file path. If `<path>` ends with `/` or is an existing directory, the default filename is appended: `deathpwn "find subs for example.com" -o /tmp/` → `/tmp/example.com-subdomains.txt` (dirb → `-dirb.txt`).
 - **`--output-dir <dir>`** — directory for the default-named file: `deathpwn "find subs for example.com" --output-dir ./results` → `./results/example.com-subdomains.txt`.
 - `~` is expanded, paths are resolved absolute. Parent directories are created automatically.
 
@@ -183,11 +187,11 @@ Adding a tool = one file in `deathpwn/tools/` with `@register("name")` + one sch
 | `Ollama timed out` | Model still loading — retry; bump `DEATHPWN_TIMEOUT` (default `30`) |
 | `subfinder not found` | Install via `pacman` / `go install`; ensure `which subfinder` succeeds |
 | `No subdomains found` | Try `--all`; run `subfinder -d <domain> -silent` directly to sanity-check |
-| `No matching tool for that request` | Rephrase to include *find / enumerate / discover* + *subdomains* + domain — v0.1 only knows `subfinder` |
+| `No matching tool for that request` | Rephrase to include *find subdomains* + domain, or *directory bruteforce* + domain — known: `subfinder` + `dirb` |
 | `Could not extract valid domain` | Check spelling; scheme/path/port are stripped automatically, but the host must be a valid domain |
 | `Unknown tool "..."` | LLM hallucinated a tool — registry guards it; rephrase and retry |
 
-Env overrides: `DEATHPWN_OLLAMA_HOST`, `DEATHPWN_MODEL`, `DEATHPWN_TIMEOUT`.
+Config via `.env` (repo root, gitignored) or shell env — shell wins over `.env` (`override=false`). Template: `.env.example` (copy with `cp .env.example .env`). Keys: `DEATHPWN_OLLAMA_HOST` / `BASE_URL` → base URL, `DEATHPWN_API_KEY` / `API_KEY` → Bearer token (leave empty for local Ollama — no header), `DEATHPWN_MODEL` / `MODEL_NAME` → model name. Env overrides: `DEATHPWN_OLLAMA_HOST`, `DEATHPWN_API_KEY`, `DEATHPWN_MODEL`, `DEATHPWN_TIMEOUT`.
 
 ---
 

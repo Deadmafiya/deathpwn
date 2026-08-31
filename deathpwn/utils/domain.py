@@ -64,6 +64,10 @@ def normalize_domain(raw: str) -> str:
 _URL_RE = re.compile(r"https?://([a-z0-9.-]+\.[a-z]{2,})", re.I)
 _DOMAIN_TOKEN_RE = re.compile(r"\b([a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,})\b", re.I)
 _SUBDOMAIN_HINT_RE = re.compile(r"sub\s*domains?|\bsubs\b|subfinder", re.I)
+_DIRB_HINT_RE = re.compile(
+    r"dir\s*b\b|directory\s+(?:brute\s*force|bruteforce|brute|enum|scan|discover)",
+    re.I,
+)
 
 
 def _lev(a: str, b: str) -> int:
@@ -131,6 +135,22 @@ def _looks_like_subdomain_request(text: str) -> bool:
         if _lev(w, "subs") <= 1:
             return True
     return False
+
+
+def _looks_like_dirb_request(text: str) -> bool:
+    """Return True if text mentions directory bruteforce (dirb)."""
+    if _DIRB_HINT_RE.search(text):
+        return True
+    low = text.lower()
+    # Phrase with any spacing/punctuation between words
+    if "directory" in low and "brute" in low:
+        return True
+    return False
+
+
+def _looks_like_any_tool_request(text: str) -> bool:
+    """True if the English looks like any supported tool intent."""
+    return _looks_like_subdomain_request(text) or _looks_like_dirb_request(text)
 
 
 def validate_domain(domain: str) -> bool:

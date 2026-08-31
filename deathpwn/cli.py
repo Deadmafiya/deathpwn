@@ -51,7 +51,9 @@ _EXAMPLES = """\
 examples:
   deathpwn "find subdomains for https://example.com"
   deathpwn "find subs for example.com" -o out.txt
-  deathpwn "enumerate subdomains of example.com" --all --verbose\
+  deathpwn "enumerate subdomains of example.com" --all --verbose
+  deathpwn "start directory bruteforce on example.com"           # -> dirb https://example.com
+  deathpwn "bruteforce directories on https://example.com/path"   # dirb (https added by CLI)\
 """
 
 
@@ -72,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         dest="output",
         default=None,
-        help="Output file path (default: ctf-flagboard/output/<domain>-subdomains.txt — linked resource)",
+        help="Output file path (default: ctf-flagboard/output/<domain>-<suffix>.txt — linked resource)",
     )
     p.add_argument(
         "--output-dir",
@@ -200,43 +202,141 @@ def main(argv: list[str] | None = None) -> int:
                 err_console.print(Panel(str(exc), title="[error]LLM error[/]", border_style="red"))
                 return 4
 
-        # 5. Hallucination guard — drop subfinder call when English has no subdomain intent
+        # 5. Hallucination guard — allow only known tool intents (typo-tolerant fuzzy)
         if tool_call is not None:
-            from deathpwn.utils.domain import _looks_like_subdomain_request
+            from deathpwn.utils.domain import _looks_like_any_tool_request
 
-            if not _looks_like_subdomain_request(query_text):
+            if not _looks_like_any_tool_request(query_text):
                 if args.verbose:
-                    console.print("  [dim]● Discarding hallucinated tool_call — query has no subdomain intent[/dim]")
+                    console.print("  [dim]● Discarding hallucinated tool_call — query has no supported intent[/dim]")
                 err_console.print(Panel(
                     "[error]No matching tool for that request.[/]\n\n"
                     "I currently support:\n"
-                    '  • [info]find subdomains[/] — e.g. deathpwn "find subdomains for example.com"',
+                    '  • [info]find subdomains[/] — e.g. deathpwn "find subdomains for example.com"\n'
+                    '  • [info]directory bruteforce[/] — e.g. deathpwn "start directory bruteforce on example.com"  [dim](-> dirb https://example.com)[/]',
                     title="hint", border_style="yellow", padding=(0, 1)
                 ))
                 return 1
 
-        # 5b. No tool matched
+        # 5b. No tool matched — try deterministic fallback before giving up (covers dirb + subfinder)
         if tool_call is None:
-            err_console.print(Panel(
-                "[error]No matching tool for that request.[/]\n\n"
-                "I currently support:\n"
-                '  • [info]find subdomains[/] — e.g. deathpwn "find subdomains for example.com"',
-                title="hint", border_style="yellow", padding=(0, 1)
-            ))
-            if args.verbose:
-                err_console.print("  [dim](model returned no tool_call — try rephrasing)[/dim]")
-            return 1
+            fb2 = fallback_tool_call(query_text)
+            if fb2 is not None:
+                if args.verbose:
+                    console.print(f"  [dim]● Model returned no tool — fallback parser: {fb2}[/dim]")
+                else:
+                    console.print(f"  [dim]● Model returned no tool — using local parser: {fb2}[/dim]")
+                tool_call = fb2
+            else:
+                err_console.print(Panel(
+                    "[error]No matching tool for that request.[/]\n\n"
+                    "I currently support:\n"
+                    '  • [info]find subdomains[/] — e.g. deathpwn "find subdomains for example.com"\n'
+                    '  • [info]directory bruteforce[/] — e.g. deathpwn "start directory bruteforce on example.com"  [dim](-> dirb https://example.com)[/]',
+                    title="hint", border_style="yellow", padding=(0, 1)
+                ))
+                if args.verbose:
+                    err_console.print("  [dim](model returned no tool_call — try rephrasing)[/dim]")
+                return 1
 
         if args.verbose:
             console.print(f"[dim]● Tool call: {tool_call}[/dim]")
             if isinstance(tool_call, dict) and tool_call.get("content"):
                 err_console.print(f"  [dim]model content: {tool_call['content']}[/dim]")
 
-        # 6. Extract domain
+        # 6. Extract domain/target — dirb uses 'target', subfinder uses 'domain'
         arguments = tool_call.get("arguments", {}) if isinstance(tool_call, dict) else {}
         if not isinstance(arguments, dict):
             arguments = {}
-        domain_raw = arguments.get("domain", "")
+        tool_name_raw = tool_call.get("name", "") if isinstance(tool_call, dict) else ""
+        is_dirb = tool_name_raw == "dirb"
+
+        if is_dirb:
+            raw_value = arguments.get("target", "") or arguments.get("domain", "") or arguments.get("url", "")
+            if not isinstance(raw_value, str):
+                raw_value = str(raw_value) if raw_value is not None else ""
+            if not raw_value or not raw_value.strip():
+                err_console.print(Panel(
+                    f"[error]Could not extract valid target from '{raw_value}'.[/]\n"
+                    'Try: deathpwn "start directory bruteforce on example.com"',
+                    border_style="red"
+                ))
+                return 2
+            from deathpwn.utils.domain import normalize_domain, validate_domain
+            # Normalize target as bare host (CLI will add https://)
+            target_host = normalize_domain(raw_value)
+            if args.verbose:
+                console.print(f'[dim]● Raw target: "{raw_value}" -> normalized host: "{target_host}" -> url: "https://{target_host}"[/dim]')
+            if not validate_domain(target_host):
+                err_console.print(Panel(
+                    f"[error]Could not extract valid target from '{raw_value}'.[/]\n"
+                    'Try: deathpwn "start directory bruteforce on example.com"',
+                    border_style="red"
+                ))
+                return 2
+
+            # 8. Resolve output (linked: ctf-flagboard/output by default) — dirb suffix
+            from deathpwn.utils.output import resolve_output_path
+            output_path = resolve_output_path(target_host, args.output, args.output_dir, suffix="-dirb.txt")
+
+            if args.json_output:
+                console.print("[dim]● Note: --json flag is accepted but JSON output is not yet implemented (txt only).[/dim]")
+
+            # 10. Dry-run — Rich panel
+            if args.dry_run:
+                url = f"https://{target_host}"
+                cmd_preview = f"dirb {url}"
+                grid = Table.grid(padding=(0, 1))
+                grid.add_column(style="dim", justify="right")
+                grid.add_column(style="info")
+                grid.add_row("Would run:", f"[bold]{cmd_preview}[/]")
+                grid.add_row("URL:", url + "  [dim](https added by CLI)[/dim]")
+                grid.add_row("Output:", str(output_path))
+                grid.add_row("Resources:", "ctf-flagboard/output/ [dim](linked)[/dim]")
+                console.print(Panel(grid, title="[info]DRY-RUN[/]  [cyan]dirb[/]", border_style="cyan", padding=(1, 2)))
+                return 0
+
+            # 11. Registry dispatch — dirb
+            import deathpwn.tools  # noqa: F401  ensure dirb + subfinder registered
+            from deathpwn.tools import registry
+            fn = registry.TOOL_REGISTRY.get("dirb")
+            if fn is None:
+                err_console.print(Panel('[error]Tool "dirb" not registered.[/]', border_style="red"))
+                return 3
+            # dirb tool handles https building internally; pass bare host as target
+            console.print(Panel(
+                f"[info]Directory bruteforce for[/] [bold]https://{target_host}[/]  [dim]via dirb → {output_path}[/dim]",
+                border_style="cyan", padding=(0, 1)
+            ))
+            from deathpwn.tools.dirb import ToolExecutionError as DirbExecError, ToolNotFound as DirbNotFound
+            try:
+                count = fn(target_host, output=output_path, verbose=args.verbose)
+            except DirbNotFound as exc:
+                err_console.print(Panel(str(exc), title="[error]Tool not found[/]", border_style="red"))
+                return 3
+            except DirbExecError as exc:
+                err_console.print(Panel(f"dirb failed: {exc}", title="[error]Execution failed[/]", border_style="red"))
+                return 3
+            except KeyboardInterrupt:
+                return 130
+            if count > 0:
+                summary = Table.grid(padding=(0, 1))
+                summary.add_column(style="success", justify="right")
+                summary.add_column()
+                summary.add_row("Found", f"[bold]{count}[/] paths")
+                summary.add_row("Saved", str(output_path))
+                summary.add_row("Source", "ctf-flagboard/output/ [dim](linked)[/dim]")
+                console.print(Panel(summary, title="[success]Done[/]  [cyan]dirb[/]", border_style="green", padding=(0, 1)))
+                return 0
+            else:
+                console.print(Panel(
+                    f"[warning]No directories/files found[/] [dim](saved raw output at {output_path})[/dim]",
+                    border_style="yellow"
+                ))
+                return 1
+
+        # --- subfinder path (default) ---
+        domain_raw = arguments.get("domain", "") or arguments.get("target", "") or arguments.get("url", "")
         if not isinstance(domain_raw, str):
             domain_raw = str(domain_raw) if domain_raw is not None else ""
         if not domain_raw or not domain_raw.strip():

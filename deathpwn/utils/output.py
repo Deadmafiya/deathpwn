@@ -1,6 +1,6 @@
 """Output path resolution for DeathPWN results.
 
-Resolves where subfinder results are saved. Linked to the ``ctf-flagboard``
+Resolves where scan results are saved. Linked to the ``ctf-flagboard``
 project folder — by default all scans land in ``ctf-flagboard/output/``
 so both repos share one resource root (``DEATHPWN_FLAGBOARD_ROOT`` /
 ``FLAGBOARD_ROOT`` env, else sibling ``../ctf-flagboard``).
@@ -8,7 +8,7 @@ so both repos share one resource root (``DEATHPWN_FLAGBOARD_ROOT`` /
 Hierarchy:
     1. ``output`` — explicit file path or directory (``-o``).
     2. ``output_dir`` — directory flag (``--output-dir``).
-    3. Fallback — ``{FLAGBOARD_ROOT}/output/<domain>-subdomains.txt``
+    3. Fallback — ``{FLAGBOARD_ROOT}/output/<domain>-<suffix>.txt``
        (resolved from :mod:`deathpwn.config` so ``deathpwn`` run from
        anywhere still writes to the flagboard project).
 
@@ -33,15 +33,18 @@ def resolve_output_path(
     domain: str,
     output: str | None = None,
     output_dir: str | None = None,
+    *,
+    suffix: str = "-subdomains.txt",
 ) -> Path:
-    """Resolve the output file path for a domain's subdomains.
+    """Resolve the output file path for a domain's scan results.
 
     Priority:
         1. ``output`` — explicit file path or directory.
         2. ``output_dir`` — directory in which to place the default-named file.
-        3. Fallback — ``{FLAGBOARD_ROOT}/output/<domain>-subdomains.txt``.
+        3. Fallback — ``{FLAGBOARD_ROOT}/output/<domain><suffix>``.
 
-    The default filename is ``f"{domain}-subdomains.txt"``.
+    The default filename is ``f"{domain}<suffix>"`` (e.g. ``"-subdomains.txt"``
+    or ``"-dirb.txt"`` for directory bruteforce).
 
     Normalization:
         * ``~`` is expanded via :meth:`pathlib.Path.expanduser`.
@@ -53,7 +56,7 @@ def resolve_output_path(
         If ``output`` looks like a directory — the raw string ends with
         ``/`` or ``\\`` *or* the expanded path exists and
         :meth:`Path.is_dir` is true — the default filename is appended
-        (``Path(output) / f"{domain}-subdomains.txt"``).
+        (``Path(output) / f"{domain}<suffix>"``).
 
     No filesystem mutation is performed here. If ``output_dir`` does not
     exist it is *not* created — the caller must call
@@ -70,6 +73,8 @@ def resolve_output_path(
         output_dir: Directory in which to create the default-named file.
             Ignored when ``output`` is provided. ``None`` or empty string
             is treated as not provided.
+        suffix: Filename suffix appended to domain (default ``"-subdomains.txt"``).
+            Use ``"-dirb.txt"`` for directory bruteforce.
 
     Returns:
         Absolute :class:`pathlib.Path` to the file that should be written.
@@ -85,7 +90,7 @@ def resolve_output_path(
         >>> resolve_output_path("example.com")  # doctest: +SKIP
         PosixPath('/.../ctf-flagboard/output/example.com-subdomains.txt')
     """
-    default_name = f"{domain}-subdomains.txt"
+    default_name = f"{domain}{suffix}"
 
     def _normalize(p: Path) -> Path:
         """Expand ``~`` and make absolute without requiring existence."""
