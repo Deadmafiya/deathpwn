@@ -216,9 +216,3 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-
-# DeathPWN — project-specific (preserved from local; not in GitHub template)
-results/
-output
-output/
-*-subdomains.txt
